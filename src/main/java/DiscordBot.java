@@ -287,8 +287,8 @@ public class DiscordBot extends ListenerAdapter {
                     return;
                 }
                 String currencyQuery = currencyInput.matches("\\d+") ?
-                        "SELECT currency_id, name, current_price FROM currencies WHERE currency_id = ?" :
-                        "SELECT currency_id, name, current_price FROM currencies WHERE LOWER(name) = LOWER(?)";
+                        "SELECT id, name, current_price FROM currencies WHERE id = ?" :
+                        "SELECT id, name, current_price FROM currencies WHERE LOWER(name) = LOWER(?)";
                 PreparedStatement currencyStmt = economicConnection.prepareStatement(currencyQuery);
                 if (currencyInput.matches("\\d+")) {
                     currencyStmt.setInt(1, Integer.parseInt(currencyInput));
@@ -302,7 +302,7 @@ public class DiscordBot extends ListenerAdapter {
                     currencyStmt.close();
                     return;
                 }
-                int currencyId = currencyRs.getInt("currency_id");
+                int currencyId = currencyRs.getInt("id");
                 String currencyName = currencyRs.getString("name");
                 double price = currencyRs.getDouble("current_price");
                 currencyRs.close();
