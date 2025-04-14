@@ -17,20 +17,54 @@ import java.util.List;
 
 public class DiscordBot extends ListenerAdapter {
 
-    private final Connection economicConnection;
-    private final Connection playersConnection;
+    private Connection economicConnection;
+    private Connection playersConnection;
     private static final List<String> ALLOWED_USERS = Arrays.asList("632581944860999690", "455682532357177354"); // mokinasofficial и mrsmaylik
 
     public DiscordBot() throws SQLException {
-        String economicUrl = "jdbc:mysql://uran.minerent.net:3306/s83687_economic";
+        connectToDatabases();
+    }
+
+    private void connectToDatabases() throws SQLException {
+        String economicUrl = "jdbc:mysql://uran.minerent.net:3306/s83687_economic?autoReconnect=true&useSSL=false";
         String economicUser = "u83687_CBVu9IOxUY";
         String economicPassword = "RXybOfBVvRm=JViQJB@Vcr7Z";
         economicConnection = DriverManager.getConnection(economicUrl, economicUser, economicPassword);
+        economicConnection.setAutoCommit(true);
 
-        String playersUrl = "jdbc:mysql://uran.minerent.net:3306/s83687_economic_players";
+        String playersUrl = "jdbc:mysql://uran.minerent.net:3306/s83687_economic_players?autoReconnect=true&useSSL=false";
         String playersUser = "u83687_wxvlsshO2A";
         String playersPassword = "Yd!.Ao^7TYmfiNaNUr^dtCli";
         playersConnection = DriverManager.getConnection(playersUrl, playersUser, playersPassword);
+        playersConnection.setAutoCommit(true);
+    }
+
+    private void reconnectIfNeeded(Connection connection, String url, String user, String password, String dbName) {
+        try {
+            if (connection == null || connection.isClosed() || !connection.isValid(2)) {
+                System.out.println("Переподключение к базе " + dbName + "...");
+                connection = DriverManager.getConnection(url, user, password);
+                connection.setAutoCommit(true);
+                System.out.println("Переподключение к базе " + dbName + " выполнено.");
+            }
+        } catch (SQLException e) {
+            System.err.println("Ошибка при переподключении к базе " + dbName + ": " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void reconnectEconomic() {
+        reconnectIfNeeded(economicConnection,
+                "jdbc:mysql://uran.minerent.net:3306/s83687_economic?autoReconnect=true&useSSL=false",
+                "u83687_CBVu9IOxUY", "RXybOfBVvRm=JViQJB@Vcr7Z", "s83687_economic");
+        economicConnection = economicConnection != null ? economicConnection : economicConnection;
+    }
+
+    private void reconnectPlayers() {
+        reconnectIfNeeded(playersConnection,
+                "jdbc:mysql://uran.minerent.net:3306/s83687_economic_players?autoReconnect=true&useSSL=false",
+                "u83687_wxvlsshO2A", "Yd!.Ao^7TYmfiNaNUr^dtCli", "s83687_economic_players");
+        playersConnection = playersConnection != null ? playersConnection : playersConnection;
     }
 
     public static void main(String[] args) throws Exception {
@@ -67,6 +101,7 @@ public class DiscordBot extends ListenerAdapter {
 
         try {
             if (command.equals("account")) {
+                reconnectPlayers();
                 String action = event.getOption("action").getAsString().toLowerCase();
                 String playerName = event.getOption("player").getAsString();
                 String password = event.getOption("password").getAsString();
@@ -137,55 +172,8 @@ public class DiscordBot extends ListenerAdapter {
                 return;
             }
 
-            // Проверка привязки аккаунта для остальных команд (кроме diseco)
-            String playerName = null;
-            String query = "SELECT player_name FROM player_currencies WHERE discord_id = ? AND currency_name = 'None' LIMIT 1";
-            PreparedStatement stmt = playersConnection.prepareStatement(query);
-            stmt.setString(1, discordId);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                playerName = rs.getString("player_name");
-            }
-            rs.close();
-            stmt.close();
-            if (playerName == null && !command.equals("diseco")) {
-                event.reply("Вы не привязали аккаунт! Используйте /account link [ник] [крипто-пароль]").setEphemeral(true).queue();
-                return;
-            }
-
-            if (command.equals("balance")) {
-                String balanceQuery = "SELECT currency_name, amount FROM player_currencies WHERE player_name = ? AND currency_name != 'None'";
-                PreparedStatement balanceStmt = playersConnection.prepareStatement(balanceQuery);
-                balanceStmt.setString(1, playerName);
-                ResultSet balanceRs = balanceStmt.executeQuery();
-                StringBuilder response = new StringBuilder("Ваш баланс:\n");
-                boolean hasBalance = false;
-                while (balanceRs.next()) {
-                    response.append(balanceRs.getString("currency_name")).append(": ").append(String.format("%.2f", balanceRs.getDouble("amount"))).append("\n");
-                    hasBalance = true;
-                }
-                balanceRs.close();
-                balanceStmt.close();
-                if (!hasBalance) {
-                    response.append("У вас нет валют!");
-                }
-                event.reply(response.toString()).setEphemeral(true).queue();
-                return;
-            }
-
-            if (command.equals("disbalance")) {
-                String balanceQuery = "SELECT discord_balance FROM player_currencies WHERE player_name = ? AND currency_name = 'None' LIMIT 1";
-                PreparedStatement balanceStmt = playersConnection.prepareStatement(balanceQuery);
-                balanceStmt.setString(1, playerName);
-                ResultSet balanceRs = balanceStmt.executeQuery();
-                double discordBalance = balanceRs.next() ? balanceRs.getDouble("discord_balance") : 0;
-                balanceRs.close();
-                balanceStmt.close();
-                event.reply("Ваш Discord-баланс: " + String.format("%.2f", discordBalance)).setEphemeral(true).queue();
-                return;
-            }
-
             if (command.equals("diseco")) {
+                reconnectPlayers();
                 if (!ALLOWED_USERS.contains(discordId)) {
                     event.reply("У вас нет прав на выполнение этой команды!").setEphemeral(true).queue();
                     return;
@@ -236,7 +224,61 @@ public class DiscordBot extends ListenerAdapter {
                 return;
             }
 
+            // Проверка привязки аккаунта для остальных команд
+            reconnectPlayers();
+            String playerName = null;
+            String query = "SELECT player_name FROM player_currencies WHERE discord_id = ? AND currency_name = 'None' LIMIT 1";
+            PreparedStatement stmt = playersConnection.prepareStatement(query);
+            stmt.setString(1, discordId);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                playerName = rs.getString("player_name");
+            }
+            rs.close();
+            stmt.close();
+
+            if (playerName == null && !command.equals("disbalance")) {
+                event.reply("Вы не привязали аккаунт! Используйте /account link [ник] [крипто-пароль]").setEphemeral(true).queue();
+                return;
+            }
+
+            if (command.equals("balance")) {
+                reconnectPlayers();
+                String balanceQuery = "SELECT currency_name, amount FROM player_currencies WHERE player_name = ? AND currency_name != 'None'";
+                PreparedStatement balanceStmt = playersConnection.prepareStatement(balanceQuery);
+                balanceStmt.setString(1, playerName);
+                ResultSet balanceRs = balanceStmt.executeQuery();
+                StringBuilder response = new StringBuilder("Ваш баланс:\n");
+                boolean hasBalance = false;
+                while (balanceRs.next()) {
+                    response.append(balanceRs.getString("currency_name")).append(": ").append(String.format("%.2f", balanceRs.getDouble("amount"))).append("\n");
+                    hasBalance = true;
+                }
+                balanceRs.close();
+                balanceStmt.close();
+                if (!hasBalance) {
+                    response.append("У вас нет валют!");
+                }
+                event.reply(response.toString()).setEphemeral(true).queue();
+                return;
+            }
+
+            if (command.equals("disbalance")) {
+                reconnectPlayers();
+                String balanceQuery = "SELECT discord_balance FROM player_currencies WHERE discord_id = ? AND currency_name = 'None' LIMIT 1";
+                PreparedStatement balanceStmt = playersConnection.prepareStatement(balanceQuery);
+                balanceStmt.setString(1, discordId);
+                ResultSet balanceRs = balanceStmt.executeQuery();
+                double discordBalance = balanceRs.next() ? balanceRs.getDouble("discord_balance") : 0;
+                balanceRs.close();
+                balanceStmt.close();
+                event.reply("Ваш Discord-баланс: " + String.format("%.2f", discordBalance)).setEphemeral(true).queue();
+                return;
+            }
+
             if (command.equals("economic")) {
+                reconnectEconomic();
+                reconnectPlayers();
                 String action = event.getOption("action").getAsString().toLowerCase();
                 String currencyInput = event.getOption("currency").getAsString();
                 double amount = event.getOption("amount").getAsDouble();
@@ -245,8 +287,8 @@ public class DiscordBot extends ListenerAdapter {
                     return;
                 }
                 String currencyQuery = currencyInput.matches("\\d+") ?
-                        "SELECT id, name, current_price FROM currencies WHERE id = ?" :
-                        "SELECT id, name, current_price FROM currencies WHERE LOWER(name) = LOWER(?)";
+                        "SELECT currency_id, name, current_price FROM currencies WHERE currency_id = ?" :
+                        "SELECT currency_id, name, current_price FROM currencies WHERE LOWER(name) = LOWER(?)";
                 PreparedStatement currencyStmt = economicConnection.prepareStatement(currencyQuery);
                 if (currencyInput.matches("\\d+")) {
                     currencyStmt.setInt(1, Integer.parseInt(currencyInput));
@@ -260,7 +302,7 @@ public class DiscordBot extends ListenerAdapter {
                     currencyStmt.close();
                     return;
                 }
-                int currencyId = currencyRs.getInt("id");
+                int currencyId = currencyRs.getInt("currency_id");
                 String currencyName = currencyRs.getString("name");
                 double price = currencyRs.getDouble("current_price");
                 currencyRs.close();
@@ -332,6 +374,7 @@ public class DiscordBot extends ListenerAdapter {
             }
         } catch (SQLException e) {
             event.reply("Ошибка базы данных: " + e.getMessage()).setEphemeral(true).queue();
+            e.printStackTrace();
         }
     }
 }
