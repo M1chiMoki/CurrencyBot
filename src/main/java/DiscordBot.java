@@ -6,7 +6,9 @@ import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.requests.GatewayIntent;
+import net.dv8tion.jda.api.EmbedBuilder;
 
+import java.awt.Color;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -83,13 +85,33 @@ public class DiscordBot extends ListenerAdapter {
                         .addOption(OptionType.STRING, "password", "Crypto password", true),
                 Commands.slash("diseco", "Admin Discord currency commands")
                         .addOption(OptionType.STRING, "action", "give or take", true)
-                        .addOption(OptionType.STRING, "player", "Minecraft username", true)
+                        .addOption(OptionType.USER, "user", "Discord user", true)
                         .addOption(OptionType.NUMBER, "amount", "Amount", true),
                 Commands.slash("economic", "Economy commands")
                         .addOption(OptionType.STRING, "action", "buy or sell", true)
                         .addOption(OptionType.STRING, "currency", "Currency name or ID", true)
-                        .addOption(OptionType.NUMBER, "amount", "Amount", true)
+                        .addOption(OptionType.NUMBER, "amount", "Amount", true),
+                Commands.slash("market", "Show the currency market"),
+                Commands.slash("eco", "Economy commands")
+                        .addOption(OptionType.STRING, "action", "market, buy or sell", true)
+                        .addOption(OptionType.STRING, "currency", "Currency name or ID", false)
+                        .addOption(OptionType.NUMBER, "amount", "Amount", false)
         ).queue();
+    }
+
+    private String formatPercent(double percent) {
+        return String.format("%.1f%%", percent);
+    }
+
+    private Color hexToColor(String hexColor) {
+        try {
+            if (hexColor != null && hexColor.matches("^#[0-9A-Fa-f]{6}$")) {
+                return Color.decode(hexColor);
+            }
+        } catch (NumberFormatException e) {
+            System.err.println("Неверный формат HEX цвета: " + hexColor);
+        }
+        return Color.WHITE;
     }
 
     @Override
@@ -179,48 +201,79 @@ public class DiscordBot extends ListenerAdapter {
                     return;
                 }
                 String action = event.getOption("action").getAsString().toLowerCase();
-                String targetPlayer = event.getOption("player").getAsString();
+                User targetUser = event.getOption("user").getAsUser();
+                String targetDiscordId = targetUser.getId();
+                String targetDiscordName = targetUser.getAsTag();
                 double amount = event.getOption("amount").getAsDouble();
                 if (amount <= 0) {
                     event.reply("Количество должно быть положительным!").setEphemeral(true).queue();
                     return;
                 }
-                String targetQuery = "SELECT discord_balance FROM player_currencies WHERE player_name = ? AND currency_name = 'None' LIMIT 1";
+                String targetQuery = "SELECT discord_balance, player_name FROM player_currencies WHERE discord_id = ? AND currency_name = 'None' LIMIT 1";
                 PreparedStatement targetStmt = playersConnection.prepareStatement(targetQuery);
-                targetStmt.setString(1, targetPlayer);
+                targetStmt.setString(1, targetDiscordId);
                 ResultSet targetRs = targetStmt.executeQuery();
                 if (!targetRs.next()) {
-                    event.reply("Игрок " + targetPlayer + " не найден!").setEphemeral(true).queue();
+                    event.reply("Пользователь " + targetDiscordName + " не привязал аккаунт Discord!").setEphemeral(true).queue();
                     targetRs.close();
                     targetStmt.close();
                     return;
                 }
                 double currentBalance = targetRs.getDouble("discord_balance");
+                String playerName = targetRs.getString("player_name");
                 targetRs.close();
                 targetStmt.close();
                 if (action.equals("give")) {
-                    String updateQuery = "UPDATE player_currencies SET discord_balance = discord_balance + ? WHERE player_name = ? AND currency_name = 'None'";
+                    String updateQuery = "UPDATE player_currencies SET discord_balance = discord_balance + ? WHERE discord_id = ? AND currency_name = 'None'";
                     PreparedStatement updateStmt = playersConnection.prepareStatement(updateQuery);
                     updateStmt.setDouble(1, amount);
-                    updateStmt.setString(2, targetPlayer);
+                    updateStmt.setString(2, targetDiscordId);
                     updateStmt.executeUpdate();
                     updateStmt.close();
-                    event.reply("Выдано " + amount + " Discord-валюты игроку " + targetPlayer).setEphemeral(true).queue();
+                    event.reply("Выдано " + amount + " Discord-валюты пользователю " + targetDiscordName + " (игрок: " + playerName + ")").setEphemeral(true).queue();
                 } else if (action.equals("take")) {
                     if (currentBalance < amount) {
-                        event.reply("У игрока " + targetPlayer + " недостаточно Discord-валюты!").setEphemeral(true).queue();
+                        event.reply("У пользователя " + targetDiscordName + " недостаточно Discord-валюты!").setEphemeral(true).queue();
                         return;
                     }
-                    String updateQuery = "UPDATE player_currencies SET discord_balance = GREATEST(0, discord_balance - ?) WHERE player_name = ? AND currency_name = 'None'";
+                    String updateQuery = "UPDATE player_currencies SET discord_balance = GREATEST(0, discord_balance - ?) WHERE discord_id = ? AND currency_name = 'None'";
                     PreparedStatement updateStmt = playersConnection.prepareStatement(updateQuery);
                     updateStmt.setDouble(1, amount);
-                    updateStmt.setString(2, targetPlayer);
+                    updateStmt.setString(2, targetDiscordId);
                     updateStmt.executeUpdate();
                     updateStmt.close();
-                    event.reply("Забрано " + amount + " Discord-валюты у игрока " + targetPlayer).setEphemeral(true).queue();
+                    event.reply("Забрано " + amount + " Discord-валюты у пользователя " + targetDiscordName + " (игрок: " + playerName + ")").setEphemeral(true).queue();
                 } else {
                     event.reply("Действие должно быть 'give' или 'take'!").setEphemeral(true).queue();
                 }
+                return;
+            }
+
+            if (command.equals("market") || (command.equals("eco") && event.getOption("action") != null && event.getOption("action").getAsString().toLowerCase().equals("market"))) {
+                reconnectEconomic();
+                String query = "SELECT id, name, color, current_price, last_change_percent FROM currencies";
+                PreparedStatement stmt = economicConnection.prepareStatement(query);
+                ResultSet rs = stmt.executeQuery();
+                EmbedBuilder embed = new EmbedBuilder();
+                embed.setTitle("Рынок валют");
+                embed.setColor(Color.BLUE);
+                boolean hasCurrencies = false;
+                while (rs.next()) {
+                    String name = rs.getString("name");
+                    String hexColor = rs.getString("color");
+                    double price = rs.getDouble("current_price");
+                    double changePercent = rs.getDouble("last_change_percent");
+                    String changeSymbol = changePercent > 0 ? "+" : changePercent < 0 ? "-" : "";
+                    String fieldValue = String.format("Цена: %.2f$ (%s%.1f%%)", price, changeSymbol, Math.abs(changePercent));
+                    embed.addField(name, fieldValue, true);
+                    hasCurrencies = true;
+                }
+                rs.close();
+                stmt.close();
+                if (!hasCurrencies) {
+                    embed.setDescription("На рынке нет валют!");
+                }
+                event.replyEmbeds(embed.build()).setEphemeral(true).queue();
                 return;
             }
 
@@ -276,10 +329,14 @@ public class DiscordBot extends ListenerAdapter {
                 return;
             }
 
-            if (command.equals("economic")) {
+            if (command.equals("economic") || command.equals("eco")) {
                 reconnectEconomic();
                 reconnectPlayers();
                 String action = event.getOption("action").getAsString().toLowerCase();
+                if (action.equals("market")) {
+                    // Обработка /eco market уже выше
+                    return;
+                }
                 String currencyInput = event.getOption("currency").getAsString();
                 double amount = event.getOption("amount").getAsDouble();
                 if (amount <= 0) {
@@ -369,7 +426,7 @@ public class DiscordBot extends ListenerAdapter {
                     updateBalanceStmt.close();
                     event.reply("Продано " + amount + " " + currencyName + " за " + gain + " Discord-валюты").setEphemeral(true).queue();
                 } else {
-                    event.reply("Действие должно быть 'buy' или 'sell'!").setEphemeral(true).queue();
+                    event.reply("Действие должно быть 'buy', 'sell' или 'market'!").setEphemeral(true).queue();
                 }
             }
         } catch (SQLException e) {
