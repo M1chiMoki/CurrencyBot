@@ -31,7 +31,7 @@ public class DiscordBot extends ListenerAdapter {
     }
 
     public static void main(String[] args) throws Exception {
-        String token = "YOUR_BOT_TOKEN"; // Замените на ваш токен
+        String token = System.getenv("BOT_TOKEN");
         JDA jda = JDABuilder.createDefault(token)
                 .enableIntents(GatewayIntent.GUILD_MEMBERS, GatewayIntent.MESSAGE_CONTENT)
                 .addEventListeners(new DiscordBot())
